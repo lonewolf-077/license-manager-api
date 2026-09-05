@@ -2,30 +2,35 @@ import os
 import uuid
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Request, Header
+from fastapi.middleware.cors import CORSMiddleware  # <--- 1. Import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-# Import your models and database tools
 from models import SessionLocal, License, init_db
-
-# Import slowapi rate-limiting tools
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 app = FastAPI()
 
-# Initialize the rate limiter (tracks requests by IP address)
+# 2. Add CORS Middleware (Allows your local admin page or any frontend to talk to this API)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins (change to specific domain later if needed)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows POST, GET, etc.
+    allow_headers=["*"],  # Allows custom headers like x-admin-secret
+)
+
+# Initialize the rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Automatically create database tables when the app starts up on Render
 @app.on_event("startup")
 def startup_event():
     init_db()
 
-# Dependency to get DB session
 def get_db():
     db = SessionLocal()
     try:
@@ -37,13 +42,18 @@ class ActivationRequest(BaseModel):
     key: str
     hardware_id: str
 
-# 1. CLIENT ENDPOINT
 @app.post("/activate")
 def activate_license(data: ActivationRequest, db: Session = Depends(get_db)):
     license_obj = db.query(License).filter(License.key == data.key).first()
     
     if not license_obj:
         raise HTTPException(status_code=404, detail="Invalid license key")
+        
+    if not license_obj.is_active:
+        raise HTTPException(status_code=403, detail="License key has been deactivated")
+        
+    if license_obj.expiration_date and license_obj.expiration_date < datetime.utcnow():
+        raise HTTPException(status_code=403, detail="License key has expired")
         
     if license_obj.hardware_id and license_obj.hardware_id != data.hardware_id:
         raise HTTPException(status_code=400, detail="License already bound to another device")
@@ -54,7 +64,6 @@ def activate_license(data: ActivationRequest, db: Session = Depends(get_db)):
         
     return {"status": "success", "message": "License successfully bound to device"}
 
-# 2. ADMIN ENDPOINT (Protected with Rate Limiting & Admin Secret Header)
 @app.post("/admin/generate-key")
 @limiter.limit("5/minute")
 def create_license_key(
