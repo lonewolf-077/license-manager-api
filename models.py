@@ -1,25 +1,23 @@
-from sqlalchemy import Column, String, Boolean, DateTime, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
-from datetime import datetime
+import os
+from sqlalchemy import create_engine, Column, String, Integer
+from sqlalchemy.orm import sessionmaker, declarative_base
 
+# Pulls the URL securely from environment variables
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("ERROR: DATABASE_URL environment variable is not set!")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class License(Base):
-    __tablename__ = 'licenses'
+    __tablename__ = "licenses"
     
-    # The actual license key string
-    license_key = Column(String, primary_key=True, index=True)
-    
-    # The unique fingerprint of the device
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True)
     hardware_id = Column(String, nullable=True)
-    
-    is_active = Column(Boolean, default=True)
-    expiration_date = Column(DateTime, nullable=False)
 
-# Database connection setup
-DATABASE_URL = "postgresql+psycopg2://neondb_owner:npg_KwvobQUX5dE6@ep-fragrant-sound-aeeotcg1-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require"
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Create tables
-Base.metadata.create_all(bind=engine)
+def init_db():
+    Base.metadata.create_all(bind=engine)

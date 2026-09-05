@@ -1,12 +1,31 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
+import os
+import uuid
 from datetime import datetime
-from models import SessionLocal, License, engine
+from fastapi import FastAPI, HTTPException, Depends, Request, Header
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-app = FastAPI(title="License Validation API")
+# Import your models and database tools
+from models import SessionLocal, License, init_db
 
-# Dependency to get the database session
+# Import slowapi rate-limiting tools
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+app = FastAPI()
+
+# Initialize the rate limiter (tracks requests by IP address)
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Automatically create database tables when the app starts up on Render
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
+# Dependency to get DB session
 def get_db():
     db = SessionLocal()
     try:
@@ -14,42 +33,53 @@ def get_db():
     finally:
         db.close()
 
-# JSON Payload structure expected from the client software
 class ActivationRequest(BaseModel):
-    license_key: str
+    key: str
     hardware_id: str
 
+# 1. CLIENT ENDPOINT
 @app.post("/activate")
-def activate_license(req: ActivationRequest, db: Session = Depends(get_db)):
-    db_license = db.query(License).filter(License.license_key == req.license_key).first()
+def activate_license(data: ActivationRequest, db: Session = Depends(get_db)):
+    license_obj = db.query(License).filter(License.key == data.key).first()
     
-    if not db_license:
-        raise HTTPException(status_code=404, detail="License key not found")
-    if not db_license.is_active or db_license.expiration_date < datetime.utcnow():
-        raise HTTPException(status_code=403, detail="License is inactive or expired")
+    if not license_obj:
+        raise HTTPException(status_code=404, detail="Invalid license key")
         
-    # Check if the key is already bound to a different machine
-    if db_license.hardware_id and db_license.hardware_id != req.hardware_id:
-        raise HTTPException(status_code=403, detail="License is already bound to another device")
+    if license_obj.hardware_id and license_obj.hardware_id != data.hardware_id:
+        raise HTTPException(status_code=400, detail="License already bound to another device")
         
-    # Bind the hardware ID if it's the first activation
-    if not db_license.hardware_id:
-        db_license.hardware_id = req.hardware_id
+    if not license_obj.hardware_id:
+        license_obj.hardware_id = data.hardware_id
         db.commit()
-        return {"status": "success", "message": "License successfully bound to device"}
         
-    return {"status": "success", "message": "License already bound to this device"}
+    return {"status": "success", "message": "License successfully bound to device"}
 
-@app.post("/validate")
-def validate_license(req: ActivationRequest, db: Session = Depends(get_db)):
-    # This endpoint is kept extremely lightweight for fast response times
-    db_license = db.query(License).filter(
-        License.license_key == req.license_key,
-        License.hardware_id == req.hardware_id,
-        License.is_active == True
-    ).first()
+# 2. ADMIN ENDPOINT (Protected with Rate Limiting & Admin Secret Header)
+@app.post("/admin/generate-key")
+@limiter.limit("5/minute")
+def create_license_key(
+    request: Request, 
+    x_admin_secret: str = Header(...), 
+    db: Session = Depends(get_db)
+):
+    expected_secret = os.getenv("ADMIN_SECRET", "super-secret-default-key")
     
-    if not db_license or db_license.expiration_date < datetime.utcnow():
-        raise HTTPException(status_code=403, detail="Validation failed")
-        
-    return {"status": "valid"}
+    if x_admin_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Unauthorized: Invalid Admin Secret")
+    
+    raw_id = uuid.uuid4().hex.upper()
+    formatted_key = f"{raw_id[:4]}-{raw_id[4:8]}-{raw_id[8:12]}-{raw_id[12:16]}"
+    
+    new_license = License(
+        key=formatted_key,
+        hardware_id=None
+    )
+    
+    db.add(new_license)
+    db.commit()
+    
+    return {
+        "status": "success",
+        "key": formatted_key,
+        "created_at": datetime.utcnow().isoformat()
+    }
