@@ -2,9 +2,10 @@ import os
 import uuid
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Request, Header
-from fastapi.middleware.cors import CORSMiddleware  # <--- 1. Import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from models import SessionLocal, License, init_db
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -13,13 +14,13 @@ from slowapi.errors import RateLimitExceeded
 
 app = FastAPI()
 
-# 2. Add CORS Middleware (Allows your local admin page or any frontend to talk to this API)
+# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins (change to specific domain later if needed)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows POST, GET, etc.
-    allow_headers=["*"],  # Allows custom headers like x-admin-secret
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Initialize the rate limiter
@@ -64,10 +65,17 @@ def activate_license(data: ActivationRequest, db: Session = Depends(get_db)):
         
     return {"status": "success", "message": "License successfully bound to device"}
 
+# Request body schema with mandatory user_name and optional metadata
+class KeyGenerationRequest(BaseModel):
+    app_name: Optional[str] = "General App"
+    user_name: str  # Mandatory field
+    email: Optional[str] = None
+
 @app.post("/admin/generate-key")
 @limiter.limit("5/minute")
 def create_license_key(
     request: Request, 
+    data: KeyGenerationRequest, 
     x_admin_secret: str = Header(...), 
     db: Session = Depends(get_db)
 ):
@@ -76,12 +84,18 @@ def create_license_key(
     if x_admin_secret != expected_secret:
         raise HTTPException(status_code=403, detail="Unauthorized: Invalid Admin Secret")
     
+    if not data.user_name or not data.user_name.strip():
+        raise HTTPException(status_code=400, detail="user_name is required")
+    
     raw_id = uuid.uuid4().hex.upper()
     formatted_key = f"{raw_id[:4]}-{raw_id[4:8]}-{raw_id[8:12]}-{raw_id[12:16]}"
     
     new_license = License(
         key=formatted_key,
-        hardware_id=None
+        hardware_id=None,
+        app_name=data.app_name,
+        user_name=data.user_name.strip(),
+        email=data.email
     )
     
     db.add(new_license)
@@ -90,10 +104,13 @@ def create_license_key(
     return {
         "status": "success",
         "key": formatted_key,
+        "app_name": data.app_name,
+        "user_name": data.user_name,
+        "email": data.email,
         "created_at": datetime.utcnow().isoformat()
     }
 
-# 3. ADMIN ENDPOINT: Fetch all license keys and statistics
+# Admin Endpoint to fetch all keys and stats for the dashboard UI
 @app.get("/admin/keys")
 @limiter.limit("10/minute")
 def get_all_licenses(
@@ -108,7 +125,6 @@ def get_all_licenses(
     
     licenses = db.query(License).all()
     
-    # Calculate statistics
     total_keys = len(licenses)
     assigned_keys = sum(1 for l in licenses if l.hardware_id)
     unassigned_keys = total_keys - assigned_keys
@@ -123,6 +139,9 @@ def get_all_licenses(
             {
                 "id": l.id,
                 "key": l.key,
+                "app_name": getattr(l, "app_name", "N/A"),
+                "user_name": getattr(l, "user_name", "N/A"),
+                "email": getattr(l, "email", "N/A"),
                 "hardware_id": l.hardware_id if l.hardware_id else "Unassigned",
                 "is_active": l.is_active,
                 "expiration_date": l.expiration_date.isoformat() if l.expiration_date else "Never"
