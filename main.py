@@ -92,3 +92,41 @@ def create_license_key(
         "key": formatted_key,
         "created_at": datetime.utcnow().isoformat()
     }
+
+# 3. ADMIN ENDPOINT: Fetch all license keys and statistics
+@app.get("/admin/keys")
+@limiter.limit("10/minute")
+def get_all_licenses(
+    request: Request, 
+    x_admin_secret: str = Header(...), 
+    db: Session = Depends(get_db)
+):
+    expected_secret = os.getenv("ADMIN_SECRET", "super-secret-default-key")
+    
+    if x_admin_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Unauthorized: Invalid Admin Secret")
+    
+    licenses = db.query(License).all()
+    
+    # Calculate statistics
+    total_keys = len(licenses)
+    assigned_keys = sum(1 for l in licenses if l.hardware_id)
+    unassigned_keys = total_keys - assigned_keys
+    
+    return {
+        "stats": {
+            "total": total_keys,
+            "assigned": assigned_keys,
+            "unassigned": unassigned_keys
+        },
+        "licenses": [
+            {
+                "id": l.id,
+                "key": l.key,
+                "hardware_id": l.hardware_id if l.hardware_id else "Unassigned",
+                "is_active": l.is_active,
+                "expiration_date": l.expiration_date.isoformat() if l.expiration_date else "Never"
+            }
+            for l in licenses
+        ]
+    }
