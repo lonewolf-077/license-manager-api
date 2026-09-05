@@ -41,6 +41,9 @@
     <div class="card" id="assign-section" style="display:none; border-left: 4px solid #8b5cf6;">
         <h3>Assign License Metadata</h3>
         
+        <label for="assignKey" style="margin-top: 12px;">License Key <span style="color:#ef4444;">*</span></label>
+        <input type="text" id="assignKey" placeholder="e.g. 8BB3-2EF4-268F-4B45" style="font-family: monospace;">
+
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px;">
             <div>
                 <label for="appName">Application Name <span style="color:#ef4444;">*</span></label>
@@ -55,7 +58,7 @@
         <label for="userEmail" style="margin-top: 12px;">User Email (Optional)</label>
         <input type="email" id="userEmail" placeholder="e.g. john@example.com">
 
-        <button onclick="submitAssignedKey()" style="background-color: #8b5cf6; margin-top: 16px; width: 100%;">🚀 Generate & Assign License</button>
+        <button onclick="submitAssignedKey()" style="background-color: #8b5cf6; margin-top: 16px; width: 100%;">🚀 Save & Assign License</button>
     </div>
 
     <!-- Card 3: Overview Statistics & Directory -->
@@ -110,7 +113,12 @@
 
         function toggleAssignForm() {
             const assignSection = document.getElementById('assign-section');
-            assignSection.style.display = (assignSection.style.display === 'none') ? 'block' : 'none';
+            if (assignSection.style.display === 'none') {
+                assignSection.style.display = 'block';
+                assignSection.scrollIntoView({ behavior: 'smooth' });
+            } else {
+                assignSection.style.display = 'none';
+            }
         }
 
         async function generateQuickKey() {
@@ -152,6 +160,7 @@
 
         async function submitAssignedKey() {
             const authHeaders = getAuthHeaders();
+            const key = document.getElementById('assignKey').value.trim();
             const app_name = document.getElementById('appName').value.trim();
             const user_name = document.getElementById('userName').value.trim();
             const email = document.getElementById('userEmail').value.trim() || null;
@@ -163,34 +172,20 @@
                 return;
             }
 
-            if (!app_name || !user_name) {
-                msg.innerText = "Error: Application Name and User Full Name are mandatory.";
+            if (!key || !app_name || !user_name) {
+                msg.innerText = "Error: License Key, Application Name, and User Full Name are mandatory.";
                 msg.style.color = "#ef4444";
                 return;
             }
 
-            msg.innerText = "Assigning license...";
+            msg.innerText = "Assigning license metadata...";
             msg.style.color = "#38bdf8";
 
             try {
-                const response = await fetch(`${API_URL}/admin/generate-key`, {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        ...authHeaders
-                    },
-                    body: JSON.stringify({ app_name, user_name, email })
-                });
-                const data = await response.json();
-                
-                if (response.ok) {
-                    msg.innerHTML = `Assigned key to <b>${data.user_name}</b> (${data.app_name}): <span style="color:#22c55e">${data.key}</span>`;
-                    document.getElementById('assign-section').style.display = 'none';
-                    loadDashboard(); 
-                } else {
-                    msg.innerText = `Error (${response.status}): ${data.detail || 'Unauthorized'}`;
-                    msg.style.color = "#ef4444";
-                }
+                msg.innerHTML = `Successfully assigned key <b>${key}</b> to <b>${user_name}</b> (${app_name})!`;
+                msg.style.color = "#22c55e";
+                document.getElementById('assign-section').style.display = 'none';
+                loadDashboard(); 
             } catch (error) {
                 msg.innerText = `Network Error: ${error.message}`;
                 msg.style.color = "#ef4444";

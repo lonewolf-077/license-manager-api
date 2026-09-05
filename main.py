@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
+import pyotp
 
 from models import SessionLocal, License, init_db
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -14,7 +15,6 @@ from slowapi.errors import RateLimitExceeded
 
 app = FastAPI()
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize the rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -38,6 +37,22 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Helper function to enforce Admin Secret + MFA
+def verify_admin_auth(x_admin_secret: str, x_admin_mfa: str):
+    expected_secret = os.getenv("ADMIN_SECRET", "super-secret-default-key")
+    totp_secret = os.getenv("ADMIN_TOTP_SECRET")
+
+    if x_admin_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Unauthorized: Invalid Admin Secret")
+
+    if not totp_secret:
+        raise HTTPException(status_code=500, detail="Server Error: ADMIN_TOTP_SECRET not configured")
+
+    totp = pyotp.TOTP(totp_secret)
+    # valid_window=1 allows a +/- 30s clock drift buffer
+    if not totp.verify(x_admin_mfa.strip(), valid_window=1):
+        raise HTTPException(status_code=403, detail="Unauthorized: Invalid or expired MFA code")
 
 class ActivationRequest(BaseModel):
     key: str
@@ -65,10 +80,9 @@ def activate_license(data: ActivationRequest, db: Session = Depends(get_db)):
         
     return {"status": "success", "message": "License successfully bound to device"}
 
-# Request body schema with mandatory user_name and optional metadata
 class KeyGenerationRequest(BaseModel):
     app_name: Optional[str] = "General App"
-    user_name: str  # Mandatory field
+    user_name: str
     email: Optional[str] = None
 
 @app.post("/admin/generate-key")
@@ -76,13 +90,11 @@ class KeyGenerationRequest(BaseModel):
 def create_license_key(
     request: Request, 
     data: KeyGenerationRequest, 
-    x_admin_secret: str = Header(...), 
+    x_admin_secret: str = Header(...),
+    x_admin_mfa: str = Header(...),
     db: Session = Depends(get_db)
 ):
-    expected_secret = os.getenv("ADMIN_SECRET", "super-secret-default-key")
-    
-    if x_admin_secret != expected_secret:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid Admin Secret")
+    verify_admin_auth(x_admin_secret, x_admin_mfa)
     
     if not data.user_name or not data.user_name.strip():
         raise HTTPException(status_code=400, detail="user_name is required")
@@ -110,21 +122,17 @@ def create_license_key(
         "created_at": datetime.utcnow().isoformat()
     }
 
-# Admin Endpoint to fetch all keys and stats for the dashboard UI
 @app.get("/admin/keys")
 @limiter.limit("10/minute")
 def get_all_licenses(
     request: Request, 
     x_admin_secret: str = Header(...), 
+    x_admin_mfa: str = Header(...),
     db: Session = Depends(get_db)
 ):
-    expected_secret = os.getenv("ADMIN_SECRET", "super-secret-default-key")
-    
-    if x_admin_secret != expected_secret:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid Admin Secret")
+    verify_admin_auth(x_admin_secret, x_admin_mfa)
     
     licenses = db.query(License).all()
-    
     total_keys = len(licenses)
     assigned_keys = sum(1 for l in licenses if l.hardware_id)
     unassigned_keys = total_keys - assigned_keys
