@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Manager Control Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <h1>License Control Center</h1>
+        <p>Manage software access, monitor device bindings, and track keys in real-time.</p>
+    </header>
+
+    <!-- Card 1: Authentication & Quick Actions -->
+    <div class="card">
+        <h3>Authentication & Actions</h3>
+        
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
+            <div>
+                <label for="secret">Admin Secret Key <span style="color:#ef4444;">*</span></label>
+                <input type="password" id="secret" placeholder="Enter your ADMIN_SECRET">
+            </div>
+            <div>
+                <label for="mfaCode">MFA Code (TOTP) <span style="color:#ef4444;">*</span></label>
+                <input type="text" id="mfaCode" maxlength="6" placeholder="6-digit code" style="letter-spacing: 2px; text-align: center;">
+            </div>
+        </div>
+        
+        <div class="btn-group" style="display: flex; gap: 12px; margin-top: 16px;">
+            <button onclick="generateQuickKey()" style="background-color: #3b82f6;">✨ Generate Quick Key</button>
+            <button onclick="toggleAssignForm()" style="background-color: #8b5cf6;" class="btn-success">📝 Assign Key Form</button>
+            <button onclick="loadDashboard()" class="btn-success">🔄 Load Dashboard</button>
+        </div>
+        <div id="msg"></div>
+    </div>
+
+    <!-- Card 2: Hidden Assignment Form -->
+    <div class="card" id="assign-section" style="display:none; border-left: 4px solid #8b5cf6;">
+        <h3>Assign License Metadata</h3>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px;">
+            <div>
+                <label for="appName">Application Name <span style="color:#ef4444;">*</span></label>
+                <input type="text" id="appName" placeholder="e.g. Enterprise Suite">
+            </div>
+            <div>
+                <label for="userName">User Full Name <span style="color:#ef4444;">*</span></label>
+                <input type="text" id="userName" placeholder="e.g. John Doe">
+            </div>
+        </div>
+
+        <label for="userEmail" style="margin-top: 12px;">User Email (Optional)</label>
+        <input type="email" id="userEmail" placeholder="e.g. john@example.com">
+
+        <button onclick="submitAssignedKey()" style="background-color: #8b5cf6; margin-top: 16px; width: 100%;">🚀 Generate & Assign License</button>
+    </div>
+
+    <!-- Card 3: Overview Statistics & Directory -->
+    <div class="card" id="dashboard-section" style="display:none;">
+        <h3>Overview Statistics</h3>
+        <div class="stats-container">
+            <div class="stat-box">
+                <h3 id="stat-total">0</h3>
+                <p>Total Keys</p>
+            </div>
+            <div class="stat-box">
+                <h3 id="stat-assigned">0</h3>
+                <p>Assigned / Bound</p>
+            </div>
+            <div class="stat-box">
+                <h3 id="stat-unassigned">0</h3>
+                <p>Available / Free</p>
+            </div>
+        </div>
+
+        <h3 style="margin-top: 30px; margin-bottom: 15px;">Active License Directory</h3>
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>License Key</th>
+                        <th>App / User / Email</th>
+                        <th>Bound Hardware ID</th>
+                        <th>Status</th>
+                        <th>Expires</th>
+                    </tr>
+                </thead>
+                <tbody id="keys-table-body">
+                    <!-- Populated dynamically -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "https://license-manager-api-2q1d.onrender.com";
+
+        function getAuthHeaders() {
+            const secret = document.getElementById('secret').value.trim();
+            const mfa = document.getElementById('mfaCode').value.trim();
+            return {
+                'x-admin-secret': secret,
+                'x-admin-mfa': mfa
+            };
+        }
+
+        function toggleAssignForm() {
+            const assignSection = document.getElementById('assign-section');
+            assignSection.style.display = (assignSection.style.display === 'none') ? 'block' : 'none';
+        }
+
+        async function generateQuickKey() {
+            const authHeaders = getAuthHeaders();
+            const msg = document.getElementById('msg');
+            
+            if (!authHeaders['x-admin-secret'] || !authHeaders['x-admin-mfa']) {
+                msg.innerText = "Error: Admin Secret Key and 6-digit MFA Code are required.";
+                msg.style.color = "#ef4444";
+                return;
+            }
+
+            msg.innerText = "Generating key...";
+            msg.style.color = "#38bdf8";
+
+            try {
+                const response = await fetch(`${API_URL}/admin/generate-key`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        ...authHeaders
+                    },
+                    body: JSON.stringify({ app_name: "General App", user_name: "Unassigned User", email: null })
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    msg.innerHTML = `Successfully generated key: <span style="color:#22c55e">${data.key}</span>`;
+                    loadDashboard(); 
+                } else {
+                    msg.innerText = `Error (${response.status}): ${data.detail || 'Unauthorized'}`;
+                    msg.style.color = "#ef4444";
+                }
+            } catch (error) {
+                msg.innerText = `Network Error: ${error.message}`;
+                msg.style.color = "#ef4444";
+            }
+        }
+
+        async function submitAssignedKey() {
+            const authHeaders = getAuthHeaders();
+            const app_name = document.getElementById('appName').value.trim();
+            const user_name = document.getElementById('userName').value.trim();
+            const email = document.getElementById('userEmail').value.trim() || null;
+            const msg = document.getElementById('msg');
+
+            if (!authHeaders['x-admin-secret'] || !authHeaders['x-admin-mfa']) {
+                msg.innerText = "Error: Admin Secret Key and 6-digit MFA Code are required.";
+                msg.style.color = "#ef4444";
+                return;
+            }
+
+            if (!app_name || !user_name) {
+                msg.innerText = "Error: Application Name and User Full Name are mandatory.";
+                msg.style.color = "#ef4444";
+                return;
+            }
+
+            msg.innerText = "Assigning license...";
+            msg.style.color = "#38bdf8";
+
+            try {
+                const response = await fetch(`${API_URL}/admin/generate-key`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        ...authHeaders
+                    },
+                    body: JSON.stringify({ app_name, user_name, email })
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    msg.innerHTML = `Assigned key to <b>${data.user_name}</b> (${data.app_name}): <span style="color:#22c55e">${data.key}</span>`;
+                    document.getElementById('assign-section').style.display = 'none';
+                    loadDashboard(); 
+                } else {
+                    msg.innerText = `Error (${response.status}): ${data.detail || 'Unauthorized'}`;
+                    msg.style.color = "#ef4444";
+                }
+            } catch (error) {
+                msg.innerText = `Network Error: ${error.message}`;
+                msg.style.color = "#ef4444";
+            }
+        }
+
+        async function loadDashboard() {
+            const authHeaders = getAuthHeaders();
+            const msg = document.getElementById('msg');
+            
+            if (!authHeaders['x-admin-secret'] || !authHeaders['x-admin-mfa']) {
+                msg.innerText = "Error: Please enter both Admin Secret Key and your 6-digit MFA Code.";
+                msg.style.color = "#ef4444";
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/admin/keys`, {
+                    method: 'GET',
+                    headers: authHeaders
+                });
+                
+                const data = await response.json();
+
+                if (!response.ok) {
+                    msg.innerText = `Error (${response.status}): ${data.detail || 'Unauthorized'}`;
+                    msg.style.color = "#ef4444";
+                    return;
+                }
+
+                document.getElementById('dashboard-section').style.display = 'block';
+                msg.innerText = "";
+
+                document.getElementById('stat-total').innerText = data.stats.total;
+                document.getElementById('stat-assigned').innerText = data.stats.assigned;
+                document.getElementById('stat-unassigned').innerText = data.stats.unassigned;
+
+                const tbody = document.getElementById('keys-table-body');
+                tbody.innerHTML = "";
+
+                data.licenses.forEach(l => {
+                    const tr = document.createElement('tr');
+                    const isAssigned = l.hardware_id !== "Unassigned";
+                    
+                    tr.innerHTML = `
+                        <td>#${l.id}</td>
+                        <td><code>${l.key}</code></td>
+                        <td>
+                            <div style="font-weight:600; color:#f8fafc;">${l.user_name}</div>
+                            <div style="font-size:12px; color:#94a3b8;">App: ${l.app_name}</div>
+                            <div style="font-size:12px; color:#94a3b8;">${l.email && l.email !== "N/A" ? l.email : ''}</div>
+                        </td>
+                        <td>${isAssigned ? `<span class="badge badge-assigned">${l.hardware_id}</span>` : '<span class="badge badge-unassigned">Unassigned</span>'}</td>
+                        <td>${l.is_active ? '<span class="badge badge-active">Active</span>' : '<span class="badge badge-unassigned">Inactive</span>'}</td>
+                        <td>${l.expiration_date.split('T')[0]}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+            } catch (error) {
+                msg.innerText = `Network Error: ${error.message}`;
+                msg.style.color = "#ef4444";
+            }
+        }
+    </script>
+</body>
+</html>
